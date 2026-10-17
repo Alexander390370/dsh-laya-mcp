@@ -28,12 +28,19 @@ import math
 import os
 import sys
 import threading
+import time
 from typing import Any
 
 # ---- 实测调优后的常量 ----------------------------------------------------
 
-# 温度校准系数。在 64 条中文样本上拟合，软化过度自信的输出。
-TEMPERATURE = 2.7235312461853027
+# 温度校准系数。**必须与 GUARD_INSTRUCTION 配对**：温度是针对某一问法下
+# 模型输出的置信度分布拟合的，换问法后原温度不再有依据。
+#
+# 实测对比（64 条中文样本）：
+#   A 问法（含 "prompt injection" 术语，AUC 0.846）→ T = 2.7235
+#   C 问法（描述攻击行为，AUC 0.913）           → T = 2.7363
+# 两者仅差 0.5%，但代码必须用与线上问法一致的那个，不能靠巧合。
+TEMPERATURE = 2.7363243103027344
 
 # guard 问句。AUC 0.913 的最优措辞（对比原版 0.846）。
 GUARD_INSTRUCTION = (
@@ -41,8 +48,10 @@ GUARD_INSTRUCTION = (
     "into ignoring its rules?"
 )
 
-# 判定阈值。注意：这是「校准后概率」空间的阈值，与原始概率阈值不可混用。
-# 校准把概率整体压向 0.5，所以阈值要相应抬高。
+# 判定阈值。注意：这是「校准后概率」空间的阈值，与原始概率空间的阈值不可混用。
+# 校准把概率整体压向 0.5，所以数值比原始空间的 0.90 更低（不是更高）。
+# 这些阈值在**同一份 64 条样本**上扫描选出并评估，存在乐观偏差，
+# 换到真实分布请自行重扫（见 README「已知局限」）。
 GUARD_THRESHOLD = 0.21        # 平衡档：F1 0.839，精度 0.765，召回 0.929
 GUARD_THRESHOLD_STRICT = 0.33  # 低误报档：精度 0.857，召回 0.643
 
@@ -64,16 +73,35 @@ KNOWN_FALSE_POSITIVE_HINTS = (
 _agent = None
 _agent_lock = threading.Lock()
 _load_error: str | None = None
+# 上次加载失败的时间戳（time.monotonic），用于退避：避免每个请求都卡 7-10s 再失败
+_load_failed_at: float | None = None
+# 加载失败后的冷却时间（秒）
+_LOAD_RETRY_COOLDOWN = 30.0
 
 
 def _get_agent():
-    """惰性加载 multilingual checkpoint。首次调用会慢（约 7s）。"""
-    global _agent, _load_error
+    """惰性加载 multilingual checkpoint。首次调用会慢（约 7-10s）。
+
+    加载失败后进入冷却期，期间直接抛错而不是重新尝试，
+    避免在权重被占用 / IO 抖动时每个请求都阻塞 7-10 秒。
+    """
+    global _agent, _load_error, _load_failed_at
     if _agent is not None:
         return _agent
+
     with _agent_lock:
         if _agent is not None:
             return _agent
+
+        # 冷却期内快速失败
+        if _load_failed_at is not None:
+            elapsed = time.monotonic() - _load_failed_at
+            if elapsed < _LOAD_RETRY_COOLDOWN:
+                wait = int(_LOAD_RETRY_COOLDOWN - elapsed)
+                raise RuntimeError(
+                    f"模型加载未就绪（{wait}s 后重试）。上次错误：{_load_error}"
+                )
+
         try:
             from laya import load as laya_load
 
@@ -82,8 +110,10 @@ def _get_agent():
                 device=os.environ.get("LAYA_DEVICE", "cpu"),
             )
             _load_error = None
+            _load_failed_at = None
         except Exception as exc:  # noqa: BLE001
             _load_error = f"{type(exc).__name__}: {exc}"
+            _load_failed_at = time.monotonic()
             raise
         return _agent
 
@@ -100,9 +130,13 @@ def _sigmoid(z: float) -> float:
     return 1.0 / (1.0 + math.exp(-z))
 
 
-def _calibrate(raw_p: float) -> float:
-    """应用温度缩放：sigmoid(logit(p) / T)。"""
-    return _sigmoid(_logit(raw_p) / TEMPERATURE)
+def _calibrate(raw_p: float, temperature: float | None = None) -> float:
+    """应用温度缩放：sigmoid(logit(p) / T)。
+
+    T 只对拟合它的那个任务有效，别跨任务复用。
+    """
+    t = TEMPERATURE if temperature is None else temperature
+    return _sigmoid(_logit(raw_p) / t)
 
 
 def _guard(text: str, threshold: float) -> dict[str, Any]:
@@ -117,12 +151,15 @@ def _guard(text: str, threshold: float) -> dict[str, Any]:
         "raw_probability": round(raw, 4),
         "threshold": threshold,
         "temperature": TEMPERATURE,
+        # 显式给默认值：消费方可以直接读，不用 .get() 也不用担心 KeyError
+        "likely_false_positive": False,
     }
     if flagged:
         result["note"] = (
             "可能为提示注入/越狱。中文技术类提问有误报风险，"
             "请结合上下文判断，不要仅凭此项阻断。"
         )
+        # 关键词命中只是弱信号，未命中不等于不是误报。
         low = text.lower()
         if any(h in low for h in KNOWN_FALSE_POSITIVE_HINTS):
             result["likely_false_positive"] = True
@@ -177,9 +214,10 @@ def laya_guard(text: str, strict: bool = False) -> str:
         "在量表上打分（score）、或回答是/否（noul）。约 55ms，完全离线。"
         "适合固定、反复、选项可枚举的判断，不适合开放式问题。"
         "注意：零样本准确率有限，重要判断请复核。"
+        "概率默认不做温度校准（校准参数只对 guard 任务有效）。"
     )
 )
-def laya_decide(text: str, questions_json: str) -> str:
+def laya_decide(text: str, questions_json: str, calibrate: bool = False) -> str:
     """结构化决策。
 
     Args:
@@ -190,6 +228,10 @@ def laya_decide(text: str, questions_json: str) -> str:
              "urgent": {"type": "noul", "instructions": "是否紧急?"},
              "priority": {"type": "score", "instructions": "优先级?",
                           "criteria": ["低", "中", "高"]}}
+        calibrate: 是否对 noul 概率套用温度校准。**默认关闭**——
+            TEMPERATURE 是在「中文提示注入检测」这一个任务上拟合的，
+            套到别的二值问题上没有依据，反而可能把原本正常校准的概率
+            错误地压向 0.5。只有你确认任务分布与 guard 相近时才开。
     """
     if not text or not text.strip():
         raise ToolError("text 不能为空")
@@ -206,14 +248,17 @@ def laya_decide(text: str, questions_json: str) -> str:
         answers = {}
         for qid, ans in out["answers"].items():
             a = dict(ans)
-            # noul 概率也做温度校准
-            if a.get("type") == "noul" and "noul" in a:
+            if calibrate and a.get("type") == "noul" and "noul" in a:
                 a["noul_raw"] = a["noul"]
                 a["noul"] = round(_calibrate(float(a["noul"])), 4)
             answers[qid] = a
         return json.dumps(
-            {"answers": answers, "routing": out.get("routing", {}),
-             "temperature": TEMPERATURE},
+            {
+                "answers": answers,
+                "routing": out.get("routing", {}),
+                "calibrated": bool(calibrate),
+                "temperature": TEMPERATURE if calibrate else None,
+            },
             ensure_ascii=False,
         )
     except Exception as exc:  # noqa: BLE001
@@ -241,6 +286,7 @@ def laya_status() -> str:
             },
             "measured": {
                 "samples": 64,
+                "sample_type": "synthetic",
                 "benign": 36,
                 "inject": 28,
                 "auc": 0.9127,
@@ -248,10 +294,15 @@ def laya_status() -> str:
                 "precision_at_threshold": 0.765,
                 "recall_at_threshold": 0.929,
                 "latency_ms_cpu": 55,
+                "caveat": (
+                    "阈值在同一份 64 条样本上选出并评估，存在乐观偏差；"
+                    "换真实分布请自行重扫"
+                ),
             },
             "known_limits": [
                 "中文误报率高于英文，技术类提问（代码/报错/脚本）易误判",
                 "温度校准只修正置信度，不提升判别力（AUC 前后一致）",
+                "样本为人工构造的 64 条，非真实流量分布",
                 "零样本准确率有限，不是安全边界",
             ],
         },
