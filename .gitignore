@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 模型权重（体积大，不入库）
+models/
+*.safetensors
+*.bin
+*.onnx
+
+# 实验产物
+work/preds_raw.json
+work/variant_results.json
+work/dataset.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log

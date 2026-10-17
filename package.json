@@ -1,0 +1,27 @@
+{
+  "name": "dsh-plugin-laya",
+  "version": "1.0.0",
+  "description": "Laya 本地决策模型（typed decisions）接入 DeepSeek Harness —— 提示注入初筛 + 结构化判断，完全离线",
+  "type": "module",
+  "private": true,
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "laya",
+    "decision-model",
+    "prompt-injection",
+    "guardrail",
+    "mcp"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Alexander390370/dsh-laya-mcp.git"
+  }
+}

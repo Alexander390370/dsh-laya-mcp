@@ -1,0 +1,35 @@
+# dsh-laya-mcp bundle patch
+#
+# 把 Laya 本地决策模型作为 MCP server 挂进 DeepSeek Harness。
+#
+# 使用前必须修改的三处：
+#   1. command  —— venv 里的 python 路径
+#   2. args[0]  —— server.py 的绝对路径
+#   3. cwd      —— server.py 所在目录
+#
+# 下面以 Windows 为例。Linux / macOS 用 /path/to/.venv/bin/python。
+#
+# 设计说明：
+#   * 只暴露 3 个工具，常驻 schema 开销很小。
+#   * 模型惰性加载（首次调用 7-10s），之后每条 50-60ms（CPU）。
+#   * 校准参数固化在 server.py 里，是实测得到的，不是默认值。
+#   * 局限：中文技术类提问有误报，不是安全边界。
+- insert:
+    - id: laya-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: laya
+        command: C:\path\to\dsh-laya-mcp\.venv\Scripts\python.exe
+        args:
+          - C:\path\to\dsh-laya-mcp\server.py
+        cwd: C:\path\to\dsh-laya-mcp
+        toolCallTimeoutMs: 120000
+        env:
+          HF_HOME: C:\path\to\dsh-laya-mcp\models
+          HF_ENDPOINT: https://hf-mirror.com
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
+          LAYA_DEVICE: cpu
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: utf-8
+          PYTHONUNBUFFERED: '1'
