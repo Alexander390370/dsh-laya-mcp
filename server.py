@@ -6,8 +6,8 @@ Laya 本地决策模型 —— DSH 专用 MCP server
 比 laya 自带的 laya-mcp-server 多做了三件实测验证过的事：
 
 1. 措辞：用 AUC 0.913 的问法，而不是原版问法（AUC 0.846）。
-   实测「prompt injection」这种术语模型听不懂，必须描述攻击行为。
-2. 校准：温度 T=2.72（在 64 条中文样本上拟合）。原模型过度自信，
+   实测极简短的问法会崩（AUC 0.666），模型需要足够的行为描述。
+2. 校准：温度 T≈2.74（C 问法拟合值 2.7363，64 条中文样本）。原模型过度自信，
    平均置信度 0.913 而实际准确率 0.719。
 3. 阈值：在校准后的概率空间重新扫描得到（0.21），不能沿用原始概率的 0.90。
 
@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -37,10 +38,11 @@ from typing import Any
 # 模型输出的置信度分布拟合的，换问法后原温度不再有依据。
 #
 # 实测对比（64 条中文样本）：
-#   A 问法（含 "prompt injection" 术语，AUC 0.846）→ T = 2.7235
-#   C 问法（描述攻击行为，AUC 0.913）           → T = 2.7363
+#   A 问法（含 "prompt injection" 术语，AUC 0.846）→ T = 2.7235312461853027
+#   C 问法（描述攻击行为，AUC 0.913）           → T = 2.736314058303833
 # 两者仅差 0.5%，但代码必须用与线上问法一致的那个，不能靠巧合。
-TEMPERATURE = 2.7363243103027344
+# 用 T_C 重扫阈值后，0.21 / 0.33 与全部指标（FP=8/FN=2 等）均未变化。
+TEMPERATURE = 2.736314058303833
 
 # guard 问句。AUC 0.913 的最优措辞（对比原版 0.846）。
 GUARD_INSTRUCTION = (
@@ -55,6 +57,11 @@ GUARD_INSTRUCTION = (
 GUARD_THRESHOLD = 0.21        # 平衡档：F1 0.839，精度 0.765，召回 0.929
 GUARD_THRESHOLD_STRICT = 0.33  # 低误报档：精度 0.857，召回 0.643
 
+# 输入文本上限（字符）。超过则截断并在返回体里标 truncated=true。
+# 2 万字符约对应 5k-10k token，足够覆盖绝大多数网页正文；
+# 再长就该先分段再逐段检测，而不是指望一次判完。
+MAX_TEXT_CHARS = 20000
+
 GUARD_QUESTIONS = {
     "inject": {
         "type": "noul",
@@ -62,11 +69,30 @@ GUARD_QUESTIONS = {
     }
 }
 
-# 已知误报模式：含这些词的技术提问容易触发误判
-KNOWN_FALSE_POSITIVE_HINTS = (
+# 已知误报模式：含这些词的技术提问容易触发误判。
+# 中文用子串匹配（中文没有词边界）；英文必须用词边界，
+# 否则 "error" 会命中 "terror"、"script" 会命中 "description"/"transcript"。
+KNOWN_FALSE_POSITIVE_HINTS_CN = (
     "代码", "报错", "脚本", "正则", "闭包", "索引", "函数", "编译",
+)
+KNOWN_FALSE_POSITIVE_HINTS_EN = (
     "code", "error", "script", "regex", "function", "compile",
 )
+# 预编译词边界正则，避免每次调用重复编译
+_FP_EN_PATTERN = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in KNOWN_FALSE_POSITIVE_HINTS_EN) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_false_positive(text: str) -> bool:
+    """弱信号：文本像是技术类提问，guard 的告警可能是误报。
+
+    只是启发式，未命中不代表不是误报。
+    """
+    if any(h in text for h in KNOWN_FALSE_POSITIVE_HINTS_CN):
+        return True
+    return _FP_EN_PATTERN.search(text) is not None
 
 # ---- 模型加载 ------------------------------------------------------------
 
@@ -160,8 +186,7 @@ def _guard(text: str, threshold: float) -> dict[str, Any]:
             "请结合上下文判断，不要仅凭此项阻断。"
         )
         # 关键词命中只是弱信号，未命中不等于不是误报。
-        low = text.lower()
-        if any(h in low for h in KNOWN_FALSE_POSITIVE_HINTS):
+        if _looks_like_false_positive(text):
             result["likely_false_positive"] = True
             result["note"] += " 文本含技术类关键词，误报可能性较高。"
     return result
@@ -193,17 +218,25 @@ def laya_guard(text: str, strict: bool = False) -> str:
     """检测提示注入。
 
     Args:
-        text: 待检测文本
+        text: 待检测文本。超过 20000 字符会被截断（返回体里 truncated=true）。
         strict: True 用低误报阈值（0.33，精度 0.857 / 召回 0.643），
                 False 用平衡阈值（0.21，F1 0.839 / 召回 0.929）
     """
     if not text or not text.strip():
         raise ToolError("text 不能为空")
-    if len(text) > 20000:
-        text = text[:20000]
+    truncated = len(text) > MAX_TEXT_CHARS
+    if truncated:
+        text = text[:MAX_TEXT_CHARS]
     try:
         th = GUARD_THRESHOLD_STRICT if strict else GUARD_THRESHOLD
-        return json.dumps(_guard(text, th), ensure_ascii=False)
+        result = _guard(text, th)
+        if truncated:
+            result["truncated"] = True
+            result["note"] = (
+                result.get("note", "")
+                + f" ⚠️ 文本超过 {MAX_TEXT_CHARS} 字符已截断，尾部内容未参与检测。"
+            ).strip()
+        return json.dumps(result, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001
         raise ToolError(f"guard 失败: {type(exc).__name__}: {exc}") from exc
 
@@ -244,7 +277,7 @@ def laya_decide(text: str, questions_json: str, calibrate: bool = False) -> str:
 
     try:
         agent = _get_agent()
-        out = agent.predict(text[:20000], questions)
+        out = agent.predict(text[:MAX_TEXT_CHARS], questions)
         answers = {}
         for qid, ans in out["answers"].items():
             a = dict(ans)

@@ -22,15 +22,10 @@ print(f"[infer] {len(d)} samples in {time.time()-t0:.1f}s")
 
 json.dump(rows, open("preds_raw.json","w",encoding="utf-8"), ensure_ascii=False, indent=1)
 
-# 评估原始排序
+# 评估原始排序（不依赖 sklearn：手写 AUC，避免复现流程要求额外装包）
 p = np.array([x["p"] for x in rows]); y = np.array([x["label"] for x in rows])
-from sklearn.metrics import roc_auc_score
-try:
-    auc = roc_auc_score(y,p)
-except Exception:
-    # 手写 AUC
-    pos=p[y==1]; neg=p[y==0]
-    auc = np.mean([(1.0 if a>b else 0.5 if a==b else 0.0) for a in pos for b in neg])
+pos = p[y == 1]; neg = p[y == 0]
+auc = float(np.mean([(1.0 if a > b else 0.5 if a == b else 0.0) for a in pos for b in neg]))
 print(f"\nRAW AUC = {auc:.4f}   (0.5=随机, 1.0=完美)")
 
 # 各阈值下的表现
