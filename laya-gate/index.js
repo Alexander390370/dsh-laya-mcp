@@ -20,8 +20,14 @@
 //   * 本步消息含 /laya：解除 restriction，本步可见可用。
 //   * 下一轮用户消息没再含 /laya：重新隐藏（sticky=false 时）。
 //   * 不写 session 事件，状态从消息内容派生，重启/恢复一致。
-
-import z from '@deepseek-ai/schemastery'
+//
+// 注意：本插件**故意不导出 Config**。
+// DSH 的 cordis loader 用 Config["~standard"].vendor === "schemastery" 识别配置
+// schema，而 @deepseek-ai/schemastery 只随 DSH 内置包提供，外部插件目录解析不到
+// （profile 的 node_modules 里没有 @deepseek-ai）。硬 import 会导致插件加载失败，
+// 表现为插件页「刷新失败」。
+// 内置插件 dsh-plugin-save-token 同样不导出 Config，只在 apply(ctx, config) 里
+// 手动读 config 字段 —— 本插件采用相同做法，零外部依赖。
 
 /** Stable Loader identity. */
 const name = 'dsh-plugin-laya-gate'
@@ -29,20 +35,13 @@ const name = 'dsh-plugin-laya-gate'
 /** Services used by this plugin. */
 const inject = ['tools', 'agents']
 
-/**
- * 配置 schema。必须是 schemastery 对象 —— DSH 的 cordis loader 通过
- * Config["~standard"].vendor === "schemastery" 与 Config.simplify 识别它；
- * 导出函数会让插件加载失败（表现为插件页「刷新失败」）。
- */
-const Config = z.object({
-  trigger: z.string().default('/laya'),
-  sticky: z.boolean().default(false),
-  tools: z.array(z.string()).default([
-    'mcp__laya__laya_decide',
-    'mcp__laya__laya_guard',
-    'mcp__laya__laya_status',
-  ]),
-})
+const DEFAULT_TRIGGER = '/laya'
+const DEFAULT_STICKY = false
+const DEFAULT_TOOLS = [
+  'mcp__laya__laya_decide',
+  'mcp__laya__laya_guard',
+  'mcp__laya__laya_status',
+]
 
 /** 从 UserMessage 提取纯文本。结构：{ content: [{ type:'text', text }] } */
 function textOf(message) {
@@ -85,12 +84,10 @@ function hasTrigger(text, trigger) {
 }
 
 function apply(ctx, config) {
-  const cfg = config || {}
-  const trigger = typeof cfg.trigger === 'string' ? cfg.trigger : '/laya'
-  const sticky = cfg.sticky === true
-  const tools = Array.isArray(cfg.tools) && cfg.tools.length > 0
-    ? cfg.tools
-    : ['mcp__laya__laya_decide', 'mcp__laya__laya_guard', 'mcp__laya__laya_status']
+  const cfg = config !== null && typeof config === 'object' ? config : {}
+  const trigger = typeof cfg.trigger === 'string' ? cfg.trigger : DEFAULT_TRIGGER
+  const sticky = cfg.sticky === true ? true : DEFAULT_STICKY
+  const tools = Array.isArray(cfg.tools) && cfg.tools.length > 0 ? cfg.tools : DEFAULT_TOOLS
 
   // agent -> { deny: disposer|null, granted: bool, revealed: bool, disabled: bool }
   const state = new Map()
@@ -221,5 +218,5 @@ function apply(ctx, config) {
   })
 }
 
-export { Config, apply, inject, name }
-export default { name, inject, apply, Config }
+export { apply, inject, name }
+export default { name, inject, apply }

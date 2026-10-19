@@ -1,52 +1,6 @@
-﻿// laya-gate 单元测试
-// 通过 import map 无法 mock 真实 schemastery，所以这里用 --import loader 注入。
-// 简单做法：把 index.js 的 import 行在测试时替换成 mock。
-import fs from 'node:fs'
-import path from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const here = path.dirname(fileURLToPath(import.meta.url))
-const src = fs.readFileSync(path.join(here, 'index.js'), 'utf8')
-
-// 把 schemastery import 换成 mock，写到临时文件再 import
-const mockZ = `
-const mk = (defaultValue) => {
-  const s = { meta: { default: defaultValue } }
-  s.default = (v) => { s.meta.default = v; return s }
-  s.description = () => s
-  s.required = () => s
-  return s
-}
-const z = {
-  string: () => mk(''),
-  boolean: () => mk(false),
-  number: () => mk(0),
-  array: (inner) => { const s = mk([]); s._inner = inner; return s },
-  object: (shape) => {
-    const s = mk(undefined)
-    s._shape = shape
-    s['~standard'] = { vendor: 'schemastery' }
-    s.simplify = (v) => v
-    return s
-  },
-}
-export default z
-`
-
-const patched = src.replace(
-  /import z from '@deepseek-ai\/schemastery'/,
-  "import z from './__mock_schemastery.mjs'"
-)
-if (patched === src) {
-  console.error('FATAL: 未能替换 schemastery import')
-  process.exit(1)
-}
-
-fs.writeFileSync(path.join(here, '__mock_schemastery.mjs'), mockZ)
-const tmpModule = path.join(here, '__plugin_under_test.mjs')
-fs.writeFileSync(tmpModule, patched)
-
-const { apply } = await import('file:///' + tmpModule.replace(/\\/g, '/'))
+// laya-gate 单元测试
+// 插件零外部依赖（不 import schemastery），可直接 import 测试。
+import { apply } from './index.js'
 
 let pass = 0
 let fail = 0
@@ -55,7 +9,7 @@ function ok(cond, label) {
   else { fail++; console.log('  FAIL  ' + label) }
 }
 
-function makeHarness(opts = {}) {
+function makeHarness(opts) {
   const handlers = new Map()
   const restrictions = []
   let currentAgent = null
@@ -77,12 +31,11 @@ function makeHarness(opts = {}) {
     },
   }
 
-  apply(ctx, {
+  apply(ctx, opts === undefined ? {
     trigger: '/laya',
     sticky: false,
     tools: ['mcp__laya__laya_decide', 'mcp__laya__laya_guard', 'mcp__laya__laya_status'],
-    ...opts,
-  })
+  } : opts)
 
   const agent = {
     ctx: {
@@ -179,26 +132,35 @@ console.log('\n=== 6. 非用户来源不触发 ===')
 
 console.log('\n=== 7. sticky 模式 ===')
 {
-  const h = makeHarness({ sticky: true })
+  const h = makeHarness({ trigger: '/laya', sticky: true })
   h.emit('agent/inbox/claimed', { message: um('/laya'), turn: 1 })
-  ok(h.visible() === true, '触发后可见')
+  ok(h.visible() === true, '触发后放开')
   h.emit('agent/inbox/claimed', { message: um('继续'), turn: 2 })
   ok(h.visible() === true, 'sticky 下新用户消息不收回')
 }
 
-console.log('\n=== 8. 工具不存在时不报错 ===')
+console.log('\n=== 8. 异常输入不崩溃 ===')
 {
-  const h = makeHarness({ tools: ['mcp__nonexistent__x'] })
+  const h = makeHarness()
   let threw = false
-  try { h.emit('agent/created', {}) } catch { threw = true }
-  ok(!threw, '不抛错')
+  try {
+    h.emit('agent/created', {})
+    h.emit('agent/created', null)
+    h.emit('agent/inbox/claimed', {})
+    h.emit('agent/inbox/claimed', null)
+    h.emit('agent/inbox/claimed', { message: null })
+  } catch { threw = true }
+  ok(!threw, '异常 payload 不抛错')
+}
+
+console.log('\n=== 9. 不传 config 时的默认值 ===')
+{
+  const h = makeHarness(undefined)
+  ok(h.restrictions.length === 1, '无 config 时仍默认隐藏')
+  h.emit('agent/inbox/claimed', { message: um('/laya'), turn: 1 })
+  ok(h.visible() === true, '无 config 时 /laya 仍能放开')
 }
 
 console.log(`\n${'='.repeat(46)}`)
 console.log(`通过 ${pass} / ${pass + fail}${fail ? `  失败 ${fail}` : '  全部通过'}`)
-
-// 清理临时文件
-try { fs.unlinkSync(tmpModule) } catch {}
-try { fs.unlinkSync(path.join(here, '__mock_schemastery.mjs')) } catch {}
-
 if (fail) process.exit(1)

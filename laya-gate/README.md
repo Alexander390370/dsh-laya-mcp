@@ -88,31 +88,27 @@ agent/pre-step
 
 | 文件 | 作用 |
 |---|---|
-| `index.js` | 插件主体 |
+| `index.js` | 插件主体（零外部依赖） |
 | `cordis.patch.yml` | bundle 配置（插入 laya-gate 行） |
 | `package.json` | bundle 清单 |
 | `locale/zh.json`、`locale/en.json` | 插件页显示文案 |
-| `test.mjs` | 单元测试（28 项） |
-| `test-e2e.mjs` | 端到端事件流模拟（真实 payload 形态，验证不抛错） |
-| `verify-config.mjs` | 校验 Config 是合法的 schemastery 对象 |
+| `test.mjs` | 单元测试（30 项） |
 
 ## 测试
 
-三个脚本都用 mock 替代 `@deepseek-ai/schemastery`（该包只在 DSH 运行时里），
-所以可以脱离 DSH 直接跑：
+插件零外部依赖，测试可直接跑，不需要 mock 任何包：
 
 ```powershell
-node test.mjs            # 28 项：默认隐藏、触发词边界、多轮时序、sticky、工具缺失
-node test-e2e.mjs        # 端到端：完整生命周期 + 异常 payload，零错误
-node verify-config.mjs   # Config 必须是 schemastery 对象（~standard.vendor 检查）
+node test.mjs   # 30 项：默认隐藏、触发词边界、多轮时序、sticky、异常输入、无 config 默认值
 ```
 
-### 两个曾经踩过的加载坑
+### 三个曾经踩过的加载坑
 
-写这个插件时，第一版**能通过逻辑测试但会让 DSH 插件页「刷新失败」**。原因有两个，
-都是对照内置插件源码才发现的：
+写这个插件的过程里，连续踩了三个会让 DSH 插件页「刷新失败」的坑。
+前两个能通过逻辑测试却加载失败，第三个直接让**整个 DSH 启动崩溃**。
+都是对照内置插件源码、或读崩溃日志才定位到的。
 
-**坑 A：`Config` 必须是 schemastery 对象，不能是函数。**
+**坑 A：不要 `import '@deepseek-ai/schemastery'`（外部插件解析不到）。**
 
 DSH 的 cordis loader 这样识别配置 schema：
 
@@ -123,13 +119,29 @@ function isSchemastery(schema) {
 // 以及 loader 里的 runtime.Config?.["simplify"]
 ```
 
-第一版写成了 `export const Config = (Schema) => Schema.object({...})`（一个函数），
-`~standard` 和 `simplify` 都不存在。正确写法是直接 import 创建对象：
+所以第一版写成函数是错的：
 
 ```js
-import z from '@deepseek-ai/schemastery'
-const Config = z.object({ trigger: z.string().default('/laya') })
+export const Config = (Schema) => Schema.object({...})   // 错：没有 ~standard / simplify
 ```
+
+但**改成 `import z from '@deepseek-ai/schemastery'` 也是错的** —— 这个包只随 DSH
+内置插件提供（内置插件的 `package.json` 把它列在 `dependencies`），外部插件目录
+（profile 的 `node_modules`）里没有 `@deepseek-ai`，模块解析直接失败。
+
+**最终方案：干脆不导出 `Config`。** DSH 允许插件没有配置 schema，
+内置插件 `dsh-plugin-save-token` 就是这么做的 —— 在 `apply(ctx, config)` 里手动读字段：
+
+```js
+function apply(ctx, config) {
+  const cfg = config !== null && typeof config === 'object' ? config : {}
+  const trigger = typeof cfg.trigger === 'string' ? cfg.trigger : '/laya'
+  // ...
+}
+export { apply, inject, name }
+```
+
+代价是插件页不会渲染配置表单，但换来零依赖、永不因模块解析失败。
 
 **坑 B：`agent/created` 的 payload 是 `{ agent }`，不是裸 agent。**
 
@@ -143,8 +155,27 @@ ctx.on('agent/created', ({ agent }) => { agent.ctx.tools.restrict(...) })
 写成裸 agent 时 `agent.ctx` 是 `undefined`，加载期直接抛错。
 `agent/disposed` 同理。参照内置 `dsh-goal-round-driver` 的写法确认过。
 
-`verify-config.mjs` 就是专门守这两个坑的：它会检查 Config 的
-`~standard.vendor === 'schemastery'`、`simplify` 是否存在、以及导出清单是否完整。
+**坑 C：改 profile 的 `package.json` 时写坏了编码，导致 DSH 启动即崩。**
+
+这个坑不在插件代码里，而在安装步骤。用 PowerShell 的
+`ConvertTo-Json | Set-Content` 写 profile 清单时，默认输出 **UTF-8 BOM + CRLF**，
+而 DSH 宿主进程用 `JSON.parse` 直接读，第一个字节就炸：
+
+```
+DesktopHostFatalError: Unexpected token '\uFEFF', "{\n    \"n"... is not valid JSON
+    at readProfileManifest (dsh-app-boot)
+```
+
+正确做法是用 Python 或 Node 写，显式 UTF-8 无 BOM + LF：
+
+```python
+import json
+p = 'package.json'
+d = json.loads(open(p, 'rb').read().decode('utf-8-sig'))
+open(p, 'w', encoding='utf-8', newline='\n').write(json.dumps(d, ensure_ascii=False, indent=2) + '\n')
+```
+
+写完自检首字节必须是 `7B`（`{`），不是 `EF BB BF`。
 
 ## 安装位置
 
