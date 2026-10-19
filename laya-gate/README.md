@@ -93,15 +93,58 @@ agent/pre-step
 | `package.json` | bundle 清单 |
 | `locale/zh.json`、`locale/en.json` | 插件页显示文案 |
 | `test.mjs` | 单元测试（28 项） |
-| `test-timing.mjs` | 多轮时序测试（14 项） |
+| `test-e2e.mjs` | 端到端事件流模拟（真实 payload 形态，验证不抛错） |
+| `verify-config.mjs` | 校验 Config 是合法的 schemastery 对象 |
 
 ## 测试
 
+三个脚本都用 mock 替代 `@deepseek-ai/schemastery`（该包只在 DSH 运行时里），
+所以可以脱离 DSH 直接跑：
+
 ```powershell
-$node = "C:\Users\34246\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
-& $node test.mjs          # 28 项：默认隐藏、触发词边界、非用户来源、sticky、工具缺失
-& $node test-timing.mjs   # 14 项：多轮工具调用不被中途收回
+node test.mjs            # 28 项：默认隐藏、触发词边界、多轮时序、sticky、工具缺失
+node test-e2e.mjs        # 端到端：完整生命周期 + 异常 payload，零错误
+node verify-config.mjs   # Config 必须是 schemastery 对象（~standard.vendor 检查）
 ```
+
+### 两个曾经踩过的加载坑
+
+写这个插件时，第一版**能通过逻辑测试但会让 DSH 插件页「刷新失败」**。原因有两个，
+都是对照内置插件源码才发现的：
+
+**坑 A：`Config` 必须是 schemastery 对象，不能是函数。**
+
+DSH 的 cordis loader 这样识别配置 schema：
+
+```js
+function isSchemastery(schema) {
+  return schema?.["~standard"].vendor === "schemastery"
+}
+// 以及 loader 里的 runtime.Config?.["simplify"]
+```
+
+第一版写成了 `export const Config = (Schema) => Schema.object({...})`（一个函数），
+`~standard` 和 `simplify` 都不存在。正确写法是直接 import 创建对象：
+
+```js
+import z from '@deepseek-ai/schemastery'
+const Config = z.object({ trigger: z.string().default('/laya') })
+```
+
+**坑 B：`agent/created` 的 payload 是 `{ agent }`，不是裸 agent。**
+
+```js
+// 错
+ctx.on('agent/created', (agent) => { agent.ctx.tools.restrict(...) })
+// 对
+ctx.on('agent/created', ({ agent }) => { agent.ctx.tools.restrict(...) })
+```
+
+写成裸 agent 时 `agent.ctx` 是 `undefined`，加载期直接抛错。
+`agent/disposed` 同理。参照内置 `dsh-goal-round-driver` 的写法确认过。
+
+`verify-config.mjs` 就是专门守这两个坑的：它会检查 Config 的
+`~standard.vendor === 'schemastery'`、`simplify` 是否存在、以及导出清单是否完整。
 
 ## 安装位置
 
