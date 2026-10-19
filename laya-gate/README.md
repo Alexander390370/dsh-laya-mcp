@@ -1,5 +1,7 @@
 # laya-gate —— 让 Laya 工具只在 `/laya` 时出现
 
+**下载**：[`dsh-plugin-laya-gate-1.0.0.zip`](https://github.com/Alexander390370/dsh-laya-mcp/releases/download/laya-gate-v1.0.0/dsh-plugin-laya-gate-1.0.0.zip)（14 KB）— 解压后看 [INSTALL.md](INSTALL.md)
+
 ## 它解决什么问题
 
 Laya 插件通过 MCP 注册了 3 个工具，**对模型全程可见**：

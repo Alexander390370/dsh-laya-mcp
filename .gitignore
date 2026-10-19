@@ -25,3 +25,8 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 发布构建产物（Release 附件另传，不入库）
+dist/
+.release-stage/
+

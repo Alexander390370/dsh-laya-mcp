@@ -1,5 +1,7 @@
 # dsh-laya-mcp
 
+[![release](https://img.shields.io/github/v/release/Alexander390370/dsh-laya-mcp?label=laya-gate&color=blue)](https://github.com/Alexander390370/dsh-laya-mcp/releases)
+
 > 把 [Laya](https://github.com/NandhaKishorM/laya) 本地决策模型接进 [DeepSeek Harness](https://github.com/deepseek-ai) 的 MCP 插件。
 > **约 55ms/条，完全离线，不消耗 token。**
 
@@ -190,6 +192,9 @@ dsh plugin --profile desktop install
 ```
 
 `/laya` 在句首、句中、句尾都行，大小写不敏感。以下**不会**触发（防止误伤）：`laya`（无斜杠）、`/layav2`、`/layabc`、`x/laya`、`/laya_decide`。
+
+**下载**：[`dsh-plugin-laya-gate-1.0.0.zip`](https://github.com/Alexander390370/dsh-laya-mcp/releases/download/laya-gate-v1.0.0/dsh-plugin-laya-gate-1.0.0.zip)（14 KB）
+解压后按包内 `INSTALL.md` 操作，5 步约 3 分钟。也可以直接用仓库里的 [`laya-gate/`](laya-gate/) 目录。
 
 ### 为什么不能简单地"每步检查一下"
 
