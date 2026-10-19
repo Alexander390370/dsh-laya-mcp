@@ -7,6 +7,8 @@ Laya 是一个非自回归的 *typed decision* 模型：你给它一段文本和
 
 本仓库提供一个针对 DSH 调优过的 MCP server，比 Laya 自带的 `laya-mcp-server` 多做了三件实测验证过的事（见 [调优过程](#调优过程)）。
 
+仓库还附带一个可选的 [工具闸门 `laya-gate/`](#工具可见性默认不该让模型全程看见)：默认把三个工具从模型视野里隐藏，只有你打 `/laya` 时才放开。理由很简单 —— 它是有明确适用边界的判断工具，不该常驻在模型桌上被随手调用。
+
 ---
 
 ## 先说清楚：它不是什么
@@ -162,6 +164,113 @@ dsh plugin --profile desktop install
 ```
 
 **概率默认不做温度校准**（`calibrate=false`）。原因：`TEMPERATURE` 是在「中文提示注入检测」这一个任务上拟合的，套到别的二值问题上没有依据，反而可能把原本正常校准的概率错误地压向 0.5。只有你确认任务分布与 guard 相近时才传 `calibrate=true`。
+
+---
+
+## 工具可见性：默认不该让模型全程看见
+
+装好插件后，三个工具会**常驻在模型的工具列表里**。这带来一个容易被忽略的问题：模型会在无关任务里也可能去调用它们，尤其是 `laya_guard` —— 它长得像"安全检查"，容易被随手当成万能过滤器，而本仓库自己的实测就写着：中文技术类提问在平衡档下仍有 **8 个误报**（64 条样本，全部集中在代码 / 报错 / 脚本 / 正则这类输入）。
+
+换句话说，**它不该默认暴露**。它应该是你在需要时主动拿起来的一把尺子，而不是模型每轮都摆在桌上的工具。
+
+### `laya-gate`：用 `/laya` 显式唤起
+
+仓库附带一个可选的工具闸门插件 `laya-gate/`，行为：
+
+| 场景 | 模型能看到 laya 工具吗 |
+|---|---|
+| 普通对话 | ❌ 看不到，连 schema 都不占 token |
+| 你输入 `/laya ...` | ✅ 这一轮任务内可见可用 |
+| 你发新消息但没带 `/laya` | ❌ 自动收回 |
+
+用法：
+
+```
+/laya 帮我用 guard 判断这段文本是不是提示注入
+```
+
+`/laya` 在句首、句中、句尾都行，大小写不敏感。以下**不会**触发（防止误伤）：`laya`（无斜杠）、`/layav2`、`/layabc`、`x/laya`、`/laya_decide`。
+
+### 为什么不能简单地"每步检查一下"
+
+写这个插件时踩了两个坑，都值得记下来。
+
+**坑 1：钩子放错位置，当步不生效。**
+
+DSH 里工具 schema 的收集顺序是：
+
+```
+inbox.claim()
+  └─ emit "agent/inbox/claimed"      ← 只有在这里切限制才来得及
+systemPrompt.assemble()              ← 工具 schema 在这里收集
+agent/pre-step                       ← 太晚了
+```
+
+`assemble()` 在 `agent/pre-step` **之前**执行。所以在 pre-step 里改工具可见性，对当步无效，要等下一步才生效。必须用 `agent/inbox/claimed`。
+
+**坑 2：按"步"收回，会把多轮调用掐断。**
+
+第一版让 `/laya` 只放开"当步"。结果：用户打 `/laya` → 模型看到工具 → 发起 tool_call → 工具结果回灌进入下一步 → 这一步不含 `/laya`，工具被收回 → 模型看到结果但工具没了，多轮调用直接断掉。
+
+正确语义是**按用户回合**判定：授权后整轮任务保持放开，直到用户发下一条不带 `/laya` 的消息才收回。中间无论多少轮工具调用都不干预。
+
+### 实现要点
+
+- **用 `ctx.tools.restrict({ deny })`**，这是 DSH 里最弱的扩展点（只能移除工具，不能新增），正合适。注册在 `agent.ctx` 上，只影响该 agent。
+- **`restrict()` 可以反复调用**：`view()` 里的 `restrictableNames` 来自全局工具表，不受已有 restriction 影响。所以即使工具当前已不可见，再次按名字 deny 依然合法，不会报 `unknown global tool`。
+- **agent 从 `ctx.agents.currentInitiator()` 取**：`agent/inbox/claimed` 的 payload 只有 `{ message, turn }`，没有 agent。driver 全程包在 `withInitiator(agent, ...)` 里，这条调用链内能拿到。
+- **状态不写 session**：全部在插件内存里，从消息内容派生。不追加任何 session 事件，fork / resume / replay 都安全。
+
+### 安装
+
+把 `laya-gate/` 放进插件目录，在 profile 的 `package.json` 里同时登记依赖和 bundle：
+
+```json
+{
+  "dependencies": {
+    "dsh-plugin-laya-gate": "link:C:/path/to/laya-gate"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": ["...", "dsh-plugin-laya", "dsh-plugin-laya-gate"]
+    }
+  }
+}
+```
+
+然后在 `cordis.patch.yml` 里配置：
+
+```yaml
+- insert:
+    - id: laya-gate
+      name: '@local/dsh-plugin-laya-gate'
+      config:
+        trigger: /laya      # 触发词，可改成 /ly、/决策 等
+        sticky: false       # true = 触发一次后本会话永久放开
+        tools:
+          - mcp__laya__laya_decide
+          - mcp__laya__laya_guard
+          - mcp__laya__laya_status
+```
+
+重启 DSH 生效（`desktop` profile 不支持热加载）。
+
+### 验证
+
+`laya-gate/` 下带两套测试，不依赖 DSH 运行时（用 mock）：
+
+```bash
+node test.mjs          # 28 项：默认隐藏、触发词边界、非用户来源、sticky、工具缺失
+node test-timing.mjs   # 14 项：多轮工具调用不被中途收回
+```
+
+### 已知限制
+
+- **依赖 `currentInitiator()` 语义**。若 DSH 某版本改动它，插件会退化成"不限制"（工具保持可见），不会误伤其他功能。
+- **只对本仓库的工具名生效**。管别的 MCP server 要改 `tools` 列表。
+- **没有 UI 开关**。改配置需编辑 `cordis.patch.yml` 后重启。
+
+> 这一节讲的是"工具什么时候出现"。它**不改变**上文所有关于准确率和局限的结论 —— `laya_guard` 依旧是廉价第一道筛子，中文误报依旧存在，阈值依旧需要按你的真实分布重扫。
 
 ---
 

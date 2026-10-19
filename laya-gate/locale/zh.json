@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Laya 工具闸门",
+    "description": "默认隐藏 Laya 本地决策模型的三个工具；只有输入 /laya 时才放开给模型使用。"
+  }
+}

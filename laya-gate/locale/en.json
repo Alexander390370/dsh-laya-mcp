@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Laya Tool Gate",
+    "description": "Hides the three Laya local-decision tools by default; they become available only when the user types /laya."
+  }
+}

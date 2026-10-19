@@ -1,0 +1,11 @@
+# laya-gate: hide the laya MCP tools unless the user types /laya.
+- insert:
+    - id: laya-gate
+      name: '@local/dsh-plugin-laya-gate'
+      config:
+        trigger: /laya
+        sticky: false
+        tools:
+          - mcp__laya__laya_decide
+          - mcp__laya__laya_guard
+          - mcp__laya__laya_status

@@ -1,0 +1,20 @@
+{
+  "name": "@local/dsh-plugin-laya-gate",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hide the laya MCP tools unless the user explicitly types /laya.",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": ["index.js", "cordis.patch.yml", "locale/*.json"],
+  "keywords": ["dsh-plugin", "laya", "tool-restriction"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
