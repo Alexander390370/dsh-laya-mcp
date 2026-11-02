@@ -1,6 +1,12 @@
 # dsh-laya-mcp
 
 [![release](https://img.shields.io/github/v/release/Alexander390370/dsh-laya-mcp?label=laya-gate&color=blue)](https://github.com/Alexander390370/dsh-laya-mcp/releases)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Latency](https://img.shields.io/badge/Latency-~55ms_per_item-brightgreen)
+![Offline](https://img.shields.io/badge/Offline-100%25-blue)
+![Token](https://img.shields.io/badge/Token_Cost-Zero-success)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![MCP](https://img.shields.io/badge/Protocol-MCP-orange)
 
 > 把 [Laya](https://github.com/NandhaKishorM/laya) 本地决策模型接进 [DeepSeek Harness](https://github.com/deepseek-ai) 的 MCP 插件。
 > **约 55ms/条，完全离线，不消耗 token。**
